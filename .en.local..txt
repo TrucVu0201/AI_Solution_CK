@@ -1,2 +1,0 @@
-DIFY_API_KEY = app-c1aHTlfzm8nI7jWN9fzFozrd
-DIFY_BASE_URL = https://dify.ba-ai-lab.com/v1

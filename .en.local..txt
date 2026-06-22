@@ -1,0 +1,2 @@
+DIFY_API_KEY=dien-key-truc-gui-vao-day
+DIFY_BASE_URL=https://domain-cua-dify/v1

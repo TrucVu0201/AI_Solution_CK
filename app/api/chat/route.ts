@@ -1,52 +1,433 @@
-// File này chạy ở PHÍA SERVER (không phải trình duyệt), nên giấu được API Key an toàn.
-// Việc của Yên: chỉ cần hiểu hàm POST bên dưới làm gì, không cần sửa nhiều.
+export const runtime = "nodejs";
+export const maxDuration = 90;
+
+type ChatRequestBody = {
+query?: string;
+conversation_id?: string;
+};
+
+type DifyStreamEvent = {
+event?: string;
+answer?: string;
+conversation_id?: string;
+message?: string;
+status?: number;
+data?: {
+outputs?: Record<string, unknown>;
+conversation_id?: string;
+error?: string;
+};
+};
+
+function findText(value: unknown): string {
+if (typeof value === "string") {
+return value.trim();
+}
+
+if (Array.isArray(value)) {
+for (const item of value) {
+const text = findText(item);
+
+  if (text) {
+    return text;
+  }
+}
+
+return "";
+
+}
+
+if (value && typeof value === "object") {
+const objectValue = value as Record<string, unknown>;
+
+const preferredKeys = [
+  "answer",
+  "final_answer",
+  "finalAnswer",
+  "text",
+  "result",
+  "output",
+  "response",
+  "output_text",
+  "result_text",
+];
+
+for (const key of preferredKeys) {
+  const text = findText(objectValue[key]);
+
+  if (text) {
+    return text;
+  }
+}
+
+for (const nestedValue of Object.values(objectValue)) {
+  const text = findText(nestedValue);
+
+  if (text) {
+    return text;
+  }
+}
+
+}
+
+return "";
+}
 
 export async function POST(req: Request) {
+try {
+const body = (await req.json()) as ChatRequestBody;
+
+const query =
+  typeof body.query === "string"
+    ? body.query.trim()
+    : "";
+
+const conversationId =
+  typeof body.conversation_id === "string"
+    ? body.conversation_id.trim()
+    : "";
+
+if (!query) {
+  return Response.json(
+    { error: "Câu hỏi trống" },
+    { status: 400 }
+  );
+}
+
+const difyApiKey =
+  process.env.DIFY_API_KEY?.trim();
+
+const difyBaseUrl =
+  process.env.DIFY_BASE_URL?.trim();
+
+console.log(
+  "Có Dify key:",
+  Boolean(difyApiKey)
+);
+
+console.log(
+  "Dify Base URL:",
+  difyBaseUrl
+);
+
+if (!difyApiKey || !difyBaseUrl) {
+  return Response.json({
+    answer:
+      'Đây là câu trả lời giả cho câu hỏi: "' +
+      query +
+      '"',
+    conversation_id:
+      conversationId ||
+      "mock-conversation-id",
+  });
+}
+
+const cleanBaseUrl =
+  difyBaseUrl.replace(/\/$/, "");
+
+const apiUrl =
+  cleanBaseUrl + "/chat-messages";
+
+console.log(
+  "Đang gọi Dify tại:",
+  apiUrl
+);
+
+const startedAt = Date.now();
+
+const difyRes = await fetch(apiUrl, {
+  method: "POST",
+  headers: {
+    Authorization:
+      "Bearer " + difyApiKey,
+    "Content-Type":
+      "application/json",
+    Accept:
+      "text/event-stream",
+  },
+  body: JSON.stringify({
+    inputs: {},
+    query: query,
+    response_mode: "streaming",
+    conversation_id:
+      conversationId,
+    user: "web-demo-user",
+  }),
+  cache: "no-store",
+});
+
+console.log(
+  "Thời gian nhận header từ Dify:",
+  Date.now() -
+    startedAt +
+    " ms"
+);
+
+console.log(
+  "HTTP status từ Dify:",
+  difyRes.status
+);
+
+console.log(
+  "Content-Type từ Dify:",
+  difyRes.headers.get(
+    "content-type"
+  )
+);
+
+if (!difyRes.ok) {
+  const errorText =
+    await difyRes.text();
+
+  console.error(
+    "Dify error:",
+    {
+      status: difyRes.status,
+      body: errorText,
+    }
+  );
+
+  return Response.json(
+    {
+      error:
+        "Chatbot đang gặp sự cố, vui lòng thử lại.",
+    },
+    {
+      status: difyRes.status,
+    }
+  );
+}
+
+if (!difyRes.body) {
+  return Response.json(
+    {
+      error:
+        "Dify không trả về dữ liệu.",
+    },
+    { status: 500 }
+  );
+}
+
+const reader =
+  difyRes.body.getReader();
+
+const decoder =
+  new TextDecoder("utf-8");
+
+let buffer = "";
+let answer = "";
+let returnedConversationId =
+  conversationId;
+
+let finished = false;
+let streamError = "";
+
+function processLine(
+  rawLine: string
+): void {
+  const line = rawLine.trim();
+
+  if (
+    !line.startsWith("data:")
+  ) {
+    return;
+  }
+
+  const jsonText =
+    line.slice(5).trim();
+
+  if (
+    !jsonText ||
+    jsonText === "[DONE]"
+  ) {
+    return;
+  }
+
   try {
-    // 1. Lấy câu hỏi và conversation_id mà Thư gửi từ giao diện lên
-    const { query, conversation_id } = await req.json();
+    const eventData =
+      JSON.parse(
+        jsonText
+      ) as DifyStreamEvent;
 
-    if (!query || query.trim() === "") {
-      return Response.json({ error: "Câu hỏi trống" }, { status: 400 });
+    console.log(
+      "Dify event:",
+      eventData.event
+    );
+
+    if (
+      eventData.conversation_id
+    ) {
+      returnedConversationId =
+        eventData.conversation_id;
     }
 
-    // 2. Gọi sang Dify API (key lấy từ .env.local, không lộ ra ngoài)
-    const difyRes = await fetch(`${process.env.DIFY_BASE_URL}/chat-messages`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.DIFY_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        inputs: {},
-        query: query,
-        response_mode: "blocking",
-        conversation_id: conversation_id || "",
-        user: "web-demo-user",
-      }),
-    });
+    if (
+      eventData.data
+        ?.conversation_id
+    ) {
+      returnedConversationId =
+        eventData.data
+          .conversation_id;
+    }
 
-    // 3. Nếu Dify trả lỗi (sai key, sai base url, server Dify die...) thì báo lỗi rõ ràng
-    if (!difyRes.ok) {
-      const errText = await difyRes.text();
-      console.error("Dify error:", errText);
-      return Response.json(
-        { error: "Chatbot đang gặp sự cố, thử lại sau." },
-        { status: 500 }
+    if (
+      eventData.event ===
+        "message" ||
+      eventData.event ===
+        "agent_message"
+    ) {
+      answer +=
+        eventData.answer || "";
+    }
+
+    if (
+      eventData.event ===
+      "workflow_finished"
+    ) {
+      const outputs =
+        eventData.data?.outputs;
+
+      console.log(
+        "Workflow outputs:",
+        JSON.stringify(
+          outputs,
+          null,
+          2
+        )
       );
+
+      const workflowAnswer =
+        findText(outputs);
+
+      if (workflowAnswer) {
+        answer =
+          workflowAnswer;
+      }
+
+      finished = true;
     }
 
-    // 4. Lấy câu trả lời và trả về cho giao diện hiển thị
-    const data = await difyRes.json();
-    return Response.json({
-      answer: data.answer,
-      conversation_id: data.conversation_id,
-    });
-  } catch (err) {
-    console.error("Server error:", err);
-    return Response.json(
-      { error: "Có lỗi xảy ra, vui lòng thử lại." },
-      { status: 500 }
+    if (
+      eventData.event ===
+      "message_end"
+    ) {
+      finished = true;
+    }
+
+    if (
+      eventData.event ===
+      "error"
+    ) {
+      streamError =
+        eventData.message ||
+        eventData.data?.error ||
+        "Dify trả về lỗi trong stream.";
+
+      finished = true;
+    }
+  } catch (error) {
+    console.error(
+      "Không đọc được dòng stream:",
+      error,
+      jsonText
     );
   }
+}
+
+while (!finished) {
+  const result =
+    await reader.read();
+
+  if (result.done) {
+    break;
+  }
+
+  buffer += decoder.decode(
+    result.value,
+    { stream: true }
+  );
+
+  const lines =
+    buffer.split(/\r?\n/);
+
+  buffer =
+    lines.pop() || "";
+
+  for (const line of lines) {
+    processLine(line);
+
+    if (finished) {
+      break;
+    }
+  }
+}
+
+buffer += decoder.decode();
+
+if (buffer.trim()) {
+  const remainingLines =
+    buffer.split(/\r?\n/);
+
+  for (
+    const line of remainingLines
+  ) {
+    processLine(line);
+  }
+}
+
+await reader
+  .cancel()
+  .catch(() => undefined);
+
+console.log(
+  "Tổng thời gian Dify hoàn tất:",
+  Date.now() -
+    startedAt +
+    " ms"
+);
+
+console.log(
+  "Có lấy được answer:",
+  Boolean(answer.trim())
+);
+
+if (streamError) {
+  return Response.json(
+    { error: streamError },
+    { status: 500 }
+  );
+}
+
+if (!answer.trim()) {
+  return Response.json(
+    {
+      error:
+        "Dify đã chạy xong nhưng không tìm thấy nội dung câu trả lời.",
+    },
+    { status: 500 }
+  );
+}
+
+return Response.json({
+  answer: answer.trim(),
+  conversation_id:
+    returnedConversationId ||
+    conversationId,
+});
+
+} catch (error) {
+console.error(
+"Server error:",
+error
+);
+
+return Response.json(
+  {
+    error:
+      "Có lỗi xảy ra, vui lòng thử lại.",
+  },
+  { status: 500 }
+);
+
+}
 }

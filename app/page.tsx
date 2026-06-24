@@ -113,7 +113,6 @@ function formatInline(text: string) {
 }
 
 const FONT_STACK = "'Be Vietnam Pro', 'Inter', 'Segoe UI', Arial, sans-serif";
-const TIMEOUT_MS = 30000;
 
 export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -139,7 +138,6 @@ export default function ChatPage() {
 
     const controller = new AbortController();
     abortRef.current = controller;
-    const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
     try {
       const res = await fetch("/api/chat", {
@@ -149,7 +147,6 @@ export default function ChatPage() {
         signal: controller.signal,
       });
 
-      clearTimeout(timeoutId);
       const data = await res.json();
 
       if (data.error) {
@@ -160,7 +157,6 @@ export default function ChatPage() {
         if (data.conversation_id) setConversationId(data.conversation_id);
       }
     } catch (err: any) {
-      clearTimeout(timeoutId);
       if (err?.name === "AbortError") {
         setMessages((prev) => [...prev, { role: "bot", text: "Đã dừng. Bạn có thể gửi lại câu hỏi nhé.", isError: false }]);
       } else {
